@@ -24,6 +24,10 @@ from models import Book, User, SafeShelf, Role, UserInventory, BookGenre, Genre
 from flask import send_from_directory
 from werkzeug.utils import secure_filename
 
+@app.route('/api/test', methods=['GET'])
+def test():
+    return jsonify({"message": "Backend is working!"})
+
 # Папка для хранения аватаров
 UPLOAD_FOLDER = 'uploads/avatars'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
