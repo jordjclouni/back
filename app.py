@@ -8,7 +8,7 @@ import os
 app = Flask(__name__)
 
 # Настройка CORS (поддержка кук + все origins или настрой конкретный)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app, resources={r"/api/*": {"origins": "https://front-production-2cc8.up.railway.app"}})
 
 # Конфигурация базы данных и сессий
 app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///crossbooking.db"
