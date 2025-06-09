@@ -2,16 +2,22 @@ from app import app, db
 from flask import request, jsonify, g
 from models import User
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import SafeShelf,Topic
-from models import BookGenre,Genre,Author,Review,Book,UserInventory,Book, User, SafeShelf, Role, UserInventory, BookGenre, Genre
-from models import User, Role
+from models import Topic, Message,BookRequest , Role, User, SafeShelf, Author, Book, BookGenre, Genre, Review, UserInventory
 import os
 import jwt
 from config import SECRET_KEY, ALGORITHM
 from datetime import datetime  # Правильный импорт
 import random
+from sqlalchemy.exc import SQLAlchemyError
+import requests
+import random
+import json
+import datetime
+from flask import jsonify, request, session
+from app import app, db
+from models import Book, Genre, BookGenre, Notification,Favorite, Notification, SafeShelf, Conversation, ChatMessage
+import logging
 
-from models import Message,Book, Author, SafeShelf, Genre, BookGenre, Review, User, Topic
 import smtplib
 from email.mime.text import MIMEText
 from config import EMAIL_USER, EMAIL_PASSWORD  # Добавьте эти переменные в config.py
@@ -19,15 +25,441 @@ import json
 
 import datetime
 import logging
-from models import User, SafeShelf, Book  # Импортируйте ваши модели
-from models import Book, User, SafeShelf, Role, UserInventory, BookGenre, Genre
+
 from flask import send_from_directory
 from werkzeug.utils import secure_filename
 
-@app.route('/api/test', methods=['GET'])
-def test():
-    return jsonify({"message": "Backend is working!"})
+# Эндпоинт для добавления отзыва
+@app.route('/api/reviews', methods=['POST'])
+def add_review():
+    try:
+        if not request.is_json:
+            return jsonify({'error': 'Ожидается JSON в теле запроса'}), 400
 
+        data = request.get_json()
+        book_id = data.get('book_id')
+        user_id = data.get('user_id')
+        name = data.get('name')
+        text = data.get('text')
+        rating = data.get('rating')
+
+        if not all([book_id, user_id, name, text, rating]):
+            return jsonify({'error': 'Требуются book_id, user_id, name, text и rating'}), 400
+
+        book_id = int(book_id)
+        user_id = int(user_id)
+        rating = int(rating)
+
+        if rating < 1 or rating > 5:
+            return jsonify({'error': 'Рейтинг должен быть от 1 до 5'}), 400
+
+        # Проверяем, существует ли уже отзыв от этого пользователя для этой книги
+        existing_review = Review.query.filter_by(book_id=book_id, user_id=user_id).first()
+        if existing_review:
+            return jsonify({'error': 'Вы уже оставили отзыв для этой книги'}), 400
+
+        book = Book.query.get(book_id)
+        if not book:
+            return jsonify({'error': 'Книга не найдена'}), 404
+
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'Пользователь не найден'}), 404
+
+        review = Review(
+            book_id=book_id,
+            user_id=user_id,
+            name=name,
+            text=text,
+            rating=rating
+        )
+        db.session.add(review)
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Отзыв успешно добавлен',
+            'review': {
+                'book_id': review.book_id,
+                'user_id': review.user_id,
+                'name': review.name,
+                'text': review.text,
+                'rating': review.rating
+            }
+        }), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'Ошибка при добавлении отзыва: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для получения отзывов по книге
+@app.route('/api/reviews', methods=['GET'])
+def get_reviews():
+    try:
+        book_id = request.args.get('book_id', type=int)
+        if not book_id:
+            return jsonify({'error': 'Требуется book_id'}), 400
+
+        reviews = Review.query.filter_by(book_id=book_id).all()
+        return jsonify([{
+            'book_id': review.book_id,
+            'user_id': review.user_id,
+            'name': review.name,
+            'text': review.text,
+            'rating': review.rating
+        } for review in reviews]), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении отзывов: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинты для избранного
+@app.route('/api/favorites', methods=['GET'])
+def get_favorites():
+    try:
+        user_id = request.args.get('user_id', type=int)
+        if not user_id:
+            return jsonify({'error': 'Требуется user_id'}), 400
+
+        favorites = Favorite.query.filter_by(user_id=user_id).all()
+        return jsonify([{'user_id': fav.user_id, 'book_id': fav.book_id} for fav in favorites]), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении избранного: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+@app.route('/api/favorites', methods=['POST'])
+def add_favorite():
+    try:
+        if not request.is_json:
+            return jsonify({'error': 'Ожидается JSON в теле запроса'}), 400
+
+        data = request.get_json()
+        user_id = data.get('user_id')
+        book_id = data.get('book_id')
+
+        if not all([user_id, book_id]):
+            return jsonify({'error': 'Требуются user_id и book_id'}), 400
+
+        user_id = int(user_id)
+        book_id = int(book_id)
+
+        if Favorite.query.filter_by(user_id=user_id, book_id=book_id).first():
+            return jsonify({'error': 'Книга уже в избранном'}), 400
+
+        book = Book.query.get(book_id)
+        if not book:
+            return jsonify({'error': 'Книга не найдена'}), 404
+
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'Пользователь не найден'}), 404
+
+        favorite = Favorite(user_id=user_id, book_id=book_id)
+        db.session.add(favorite)
+        db.session.commit()
+        return jsonify({'message': 'Книга добавлена в избранное'}), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'Ошибка при добавлении в избранное: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+@app.route('/api/favorites/<int:user_id>/<int:book_id>', methods=['DELETE'])
+def remove_favorite(user_id, book_id):
+    try:
+        favorite = Favorite.query.filter_by(user_id=user_id, book_id=book_id).first()
+        if not favorite:
+            return jsonify({'error': 'Книга не найдена в избранном'}), 404
+
+        db.session.delete(favorite)
+        db.session.commit()
+        return jsonify({'message': 'Книга удалена из избранного'}), 200
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'Ошибка при удалении из избранного: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для получения книги по ID
+@app.route('/api/books/<int:book_id>', methods=['GET'])
+def get_book(book_id):
+    try:
+        book = Book.query.get(book_id)
+        if not book:
+            return jsonify({'error': 'Книга не найдена'}), 404
+
+        return jsonify({
+            "id": book.id,
+            "title": book.title,
+            "author_id": book.author_id,
+            "description": book.description,
+            "safe_shelf_id": book.safe_shelf_id,
+            "user_id": book.user_id,
+            "isbn": book.isbn,
+            "status": book.status,
+            "genres": [g.genre_id for g in book.genres],
+            "path": book.path
+        }), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении книги: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для обновления книги и создания уведомлений
+@app.route('/api/books/<int:book_id>', methods=['PUT'])
+def update_book(book_id):
+    try:
+        if not request.is_json:
+            return jsonify({'error': 'Ожидается JSON в теле запроса'}), 400
+
+        data = request.get_json()
+        status = data.get('status')
+        safe_shelf_id = data.get('safe_shelf_id', type=int)
+
+        book = Book.query.get(book_id)
+        if not book:
+            return jsonify({'error': 'Книга не найдена'}), 404
+
+        if status:
+            book.status = status
+        if safe_shelf_id is not None:
+            book.safe_shelf_id = safe_shelf_id
+
+        db.session.commit()
+
+        # Создаем уведомления, если книга помещена в безопасную ячейку
+        if status == 'in_safe_shelf' and safe_shelf_id:
+            safe_shelf = SafeShelf.query.get(safe_shelf_id)
+            if not safe_shelf:
+                return jsonify({'error': 'Безопасная ячейка не найдена'}), 404
+
+            favorites = Favorite.query.filter_by(book_id=book_id).all()
+            for favorite in favorites:
+                notification = Notification(
+                    user_id=favorite.user_id,
+                    book_id=book_id,
+                    safe_shelf_id=safe_shelf_id,
+                    message=f"Книга '{book.title}' теперь доступна в безопасной ячейке по адресу: {safe_shelf.address}"
+                )
+                db.session.add(notification)
+            db.session.commit()
+
+        return jsonify({
+            "id": book.id,
+            "title": book.title,
+            "author_id": book.author_id,
+            "description": book.description,
+            "safe_shelf_id": book.safe_shelf_id,
+            "user_id": book.user_id,
+            "isbn": book.isbn,
+            "status": book.status,
+            "genres": [g.genre_id for g in book.genres],
+            "path": book.path
+        }), 200
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'Ошибка при обновлении книги: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для получения уведомлений
+@app.route('/api/notifications', methods=['GET'])
+def get_notifications():
+    try:
+        user_id = request.args.get('user_id', type=int)
+        if not user_id:
+            return jsonify({'error': 'Требуется user_id'}), 400
+
+        notifications = Notification.query.filter_by(user_id=user_id).order_by(Notification.created_at.desc()).all()
+        return jsonify([{
+            'id': notif.id,
+            'user_id': notif.user_id,
+            'book_id': notif.book_id,
+            'safe_shelf_id': notif.safe_shelf_id,
+            'message': notif.message,
+            'is_read': notif.is_read,
+            'created_at': notif.created_at.isoformat() if notif.created_at else None
+        } for notif in notifications]), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении уведомлений: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для отправки запроса на книгу (создает беседу)
+@app.route('/api/book_requests', methods=['POST'])
+def create_book_request():
+    try:
+        if not request.is_json:
+            return jsonify({'error': 'Ожидается JSON в теле запроса'}), 400
+
+        data = request.get_json()
+        book_id = data.get('book_id')
+        sender_id = data.get('sender_id')
+        recipient_id = data.get('recipient_id')
+        content = data.get('content')
+
+        if not all([book_id, sender_id, recipient_id, content]):
+            return jsonify({'error': 'Требуются book_id, sender_id, recipient_id и content'}), 400
+
+        book = Book.query.get(book_id)
+        if not book:
+            return jsonify({'error': 'Книга не найдена'}), 404
+
+        sender = User.query.get(sender_id)
+        if not sender:
+            return jsonify({'error': 'Отправитель не найден'}), 404
+
+        recipient = User.query.get(recipient_id)
+        if not recipient:
+            return jsonify({'error': 'Получатель не найден'}), 404
+
+        # Проверяем, существует ли уже беседа между этими пользователями по этой книге
+        existing_conversation = Conversation.query.filter_by(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            book_id=book_id
+        ).first()
+
+        if existing_conversation:
+            # Если беседа существует, добавляем сообщение в неё
+            message = ChatMessage(
+                conversation_id=existing_conversation.id,
+                sender_id=sender_id,
+                content=content
+            )
+            db.session.add(message)
+            db.session.commit()
+            return jsonify({
+                'message': 'Сообщение добавлено в существующую беседу',
+                'conversation_id': existing_conversation.id
+            }), 200
+
+        # Создаем новую беседу
+        conversation = Conversation(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            book_id=book_id
+        )
+        db.session.add(conversation)
+        db.session.flush()  # Получаем ID беседы перед коммитом
+
+        # Создаем первое сообщение в беседе
+        message = ChatMessage(
+            conversation_id=conversation.id,
+            sender_id=sender_id,
+            content=content
+        )
+        db.session.add(message)
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Запрос на книгу отправлен, беседа создана',
+            'conversation_id': conversation.id
+        }), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'Ошибка при создании запроса: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для получения списка бесед пользователя
+@app.route('/api/conversations', methods=['GET'])
+def get_conversations():
+    try:
+        user_id = request.args.get('user_id', type=int)
+        if not user_id:
+            return jsonify({'error': 'Требуется user_id'}), 400
+
+        # Получаем беседы, где пользователь является отправителем или получателем
+        conversations = Conversation.query.filter(
+            (Conversation.sender_id == user_id) | (Conversation.recipient_id == user_id)
+        ).order_by(Conversation.created_at.desc()).all()
+
+        return jsonify([conv.to_json() for conv in conversations]), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении бесед: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для получения сообщений в беседе
+@app.route('/api/conversations/<int:conversation_id>/messages', methods=['GET'])
+def get_conversation_messages(conversation_id):
+    try:
+        messages = ChatMessage.query.filter_by(conversation_id=conversation_id).order_by(ChatMessage.created_at.asc()).all()
+        return jsonify([msg.to_json() for msg in messages]), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении сообщений: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+# Эндпоинт для отправки сообщения в беседе
+@app.route('/api/conversations/<int:conversation_id>/messages', methods=['POST'])
+def send_message(conversation_id):
+    try:
+        if not request.is_json:
+            return jsonify({'error': 'Ожидается JSON в теле запроса'}), 400
+
+        data = request.get_json()
+        sender_id = data.get('sender_id')
+        content = data.get('content')
+
+        if not all([sender_id, content]):
+            return jsonify({'error': 'Требуются sender_id и content'}), 400
+
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            return jsonify({'error': 'Беседа не найдена'}), 404
+
+        # Проверяем, что отправитель является участником беседы
+        if conversation.sender_id != sender_id and conversation.recipient_id != sender_id:
+            return jsonify({'error': 'У вас нет доступа к этой беседе'}), 403
+
+        message = ChatMessage(
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            content=content
+        )
+        db.session.add(message)
+        db.session.commit()
+
+        return jsonify(message.to_json()), 201
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'Ошибка при отправке сообщения: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+    
 # Папка для хранения аватаров
 UPLOAD_FOLDER = 'uploads/avatars'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
@@ -36,6 +468,26 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    try:
+        users = User.query.all()
+        if not users:
+            return jsonify({'message': 'Пользователи не найдены'}), 200
+
+        return jsonify([{
+            'user_id': user.id,
+            'name': user.name,
+            'email': user.email
+        } for user in users]), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении пользователей: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
 
 @app.route('/api/user/avatar', methods=['POST'])
 def upload_avatar():
@@ -71,6 +523,7 @@ def upload_avatar():
         logger.error(f"Ошибка при загрузке аватара: {str(e)}")
         return jsonify({"error": f"Ошибка при загрузке аватара: {str(e)}"}), 500
 
+
 # Маршрут для отдачи файлов аватаров
 @app.route('/uploads/avatars/<filename>')
 def serve_avatar(filename):
@@ -85,108 +538,6 @@ import logging
 # Настройка логгера (если ещё не настроен)
 logger = logging.getLogger(__name__)
 
-# Получение книги по ID (для страницы книги)
-@app.route('/api/books/<int:book_id>', methods=['GET'])
-def get_book(book_id):
-    try:
-        book = Book.query.get(book_id)
-        if not book:
-            return jsonify({"error": "Книга не найдена"}), 404
-
-        # Получаем автора
-        author = Author.query.get(book.author_id)
-        # Получаем жанры
-        genres = [g.genre.name for g in book.genres]
-        # Получаем ячейку (если есть)
-        shelf = SafeShelf.query.get(book.safe_shelf_id) if book.safe_shelf_id else None
-
-        return jsonify({
-            "id": book.id,
-            "title": book.title,
-            "author": {
-                "id": author.id,
-                "name": author.name,
-                "description": author.description
-            } if author else None,
-            "description": book.description,
-            "safe_shelf_id": book.safe_shelf_id,
-            "shelf_location": {
-                "id": shelf.id if shelf else None,
-                "name": shelf.name if shelf else "Не указано",
-                "address": shelf.address if shelf else "Не указано",
-                "latitude": shelf.latitude if shelf else None,
-                "longitude": shelf.longitude if shelf else None
-            } if shelf else None,
-            "user_id": book.user_id,
-            "isbn": book.isbn,
-            "status": book.status,
-            "genres": genres,
-            "path": book.path
-        }), 200
-    except Exception as e:
-        logger.error(f"Ошибка при получении книги ID {book_id}: {str(e)}")
-        return jsonify({"error": f"Ошибка при получении книги: {str(e)}"}), 500
-    
-@app.route('/api/reviews/<int:book_id>', methods=['GET'])
-def get_reviews(book_id):
-    try:
-        reviews = Review.query.filter_by(book_id=book_id).all()
-        return jsonify([{
-            "book_id": r.book_id,
-            "user_id": r.user_id,
-            "name": r.name,
-            "text": r.text,
-            "rating": r.rating
-        } for r in reviews]), 200
-    except Exception as e:
-        logger.error(f"Ошибка при получении отзывов для книги ID {book_id}: {str(e)}")
-        return jsonify({"error": f"Ошибка при получении отзывов: {str(e)}"}), 500
-
-@app.route('/api/reviews', methods=['POST'])
-def add_review():
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
-    data = request.json
-    book_id = data.get("book_id")
-    text = data.get("text")
-    rating = data.get("rating")
-
-    if not book_id or not text or not rating:
-        return jsonify({"error": "Все поля обязательны"}), 400
-
-    if not (1 <= rating <= 5):
-        return jsonify({"error": "Рейтинг должен быть от 1 до 5"}), 400
-
-    try:
-        book = Book.query.get(book_id)
-        if not book:
-            return jsonify({"error": "Книга не найдена"}), 404
-
-        user = User.query.get(session.get("user_id"))
-        if not user:
-            return jsonify({"error": "Пользователь не найден"}), 404
-
-        # Проверяем, не оставлял ли пользователь уже отзыв на эту книгу
-        existing_review = Review.query.filter_by(book_id=book_id, user_id=user.id).first()
-        if existing_review:
-            return jsonify({"error": "Вы уже оставили отзыв на эту книгу"}), 400
-
-        new_review = Review(
-            book_id=book_id,
-            user_id=user.id,
-            name=user.name,
-            text=text,
-            rating=rating
-        )
-        db.session.add(new_review)
-        db.session.commit()
-
-        return jsonify({"message": "Отзыв добавлен"}), 201
-    except Exception as e:
-        logger.error(f"Ошибка при добавлении отзыва: {str(e)}")
-        return jsonify({"error": f"Ошибка при добавлении отзыва: {str(e)}"}), 500
-# Получение темы и её сообщений
 
 @app.route('/api/topic/<int:id>', methods=['GET'])
 def get_topic(id):
@@ -542,39 +893,7 @@ def get_user_profile():
         logger.error(f"Ошибка при получении профиля пользователя: {str(e)}")
         return jsonify({"error": f"Ошибка при получении профиля: {str(e)}"}), 500
     
-# Получение списка пользователей
-@app.route('/api/users', methods=['GET'])
-def get_users():
-    if not session.get("user_id") or not has_admin_role(session.get("user_id")):  # Проверка роли администратора
-        return jsonify({"error": "Требуются права администратора"}), 403
-    try:
-        users = User.query.all()
-        return jsonify([user.to_json() for user in users])
-    except Exception as e:
-        logger.error(f"Ошибка при получении пользователей: {str(e)}")
-        return jsonify({"error": f"Ошибка при получении пользователей: {str(e)}"}), 500
 
-# Удаление пользователя
-@app.route('/api/users/<int:id>', methods=['DELETE'])
-def delete_user(id):
-    if not session.get("user_id") or not has_admin_role(session.get("user_id")):
-        return jsonify({"error": "Требуются права администратора"}), 403
-    try:
-        user = User.query.get_or_404(id)
-        db.session.delete(user)
-        db.session.commit()
-        return jsonify({"message": "Пользователь удалён"}), 200
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Ошибка при удалении пользователя {id}: {str(e)}")
-        return jsonify({"error": f"Ошибка при удалении пользователя: {str(e)}"}), 500
-
-# Функция проверки роли администратора (пример)
-def has_admin_role(user_id):
-    user = User.query.get(user_id)
-    if user and hasattr(user, 'role') and user.role and user.role.id == 1:  # Предположим, 1 — ID роли администратора
-        return True
-    return False
 
 @app.route("/api/authors", methods=["POST"])
 def add_author():
@@ -866,8 +1185,12 @@ def get_books():
         genre_id = request.args.get("genre_id", type=int, default=None)  # По жанру
         status = request.args.get("status", type=str, default=None)  # По статусу (available, reserved, in_hand)
 
-        # Базовый запрос
-        query = Book.query.join(BookGenre).filter(BookGenre.book_id == Book.id)
+        # Базовый запрос без JOIN, чтобы не исключать книги без жанров
+        query = Book.query
+
+        # Применяем JOIN только если фильтр по жанру указан
+        if genre_id is not None:
+            query = query.join(BookGenre).filter(BookGenre.genre_id == genre_id)
 
         # Применяем фильтры, если они указаны и не None
         if title:
@@ -876,15 +1199,16 @@ def get_books():
             query = query.filter(Book.author_id == author_id)
         if safe_shelf_id is not None:
             query = query.filter(Book.safe_shelf_id == safe_shelf_id)
-        if genre_id is not None:
-            query = query.filter(BookGenre.genre_id == genre_id)
         if status:
-            query = query.filter(Book.status == status)
+            query = query.filter(Book.status.ilike(status))  # Игнорируем регистр для статуса
 
         # Получаем книги
         books = query.all()
 
+        # Логируем SQL-запрос для отладки
+        logger.debug(f"Сгенерированный SQL: {query.statement}")
         logger.debug(f"Параметры запроса: {request.args}, возвращено {len(books)} книг")
+
         return jsonify([
             {
                 "id": book.id,
@@ -903,12 +1227,76 @@ def get_books():
     except Exception as e:
         logger.error(f"Ошибка при получении книг: {str(e)}")
         return jsonify({"error": f"Ошибка при получении книг: {str(e)}"}), 500
-
+    
 
 from flask import request, jsonify, session
 from app import app, db
 from models import Book, Genre, BookGenre
 from datetime import datetime  # Правильный импорт
+
+import requests
+import random
+import json
+import datetime
+from flask import jsonify, request, session
+from app import app, db
+from models import Book, Genre, BookGenre
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+@app.route('/api/books/fetch-isbn', methods=['POST'])
+def fetch_isbn():
+    data = request.json
+
+    # Проверяем, передан ли заголовок книги
+    if not data or 'title' not in data:
+        return jsonify({"error": "Title is required"}), 400
+
+    title = data['title']
+    isbn = None
+
+    # Пробуем найти ISBN через Google Books API
+    try:
+        GOOGLE_BOOKS_API_KEY = "AIzaSyB74WeOBbZUwdtLYsCmvWjdI2k9gMuG01o"
+        api_url = f"https://www.googleapis.com/books/v1/volumes?q=intitle:{title.replace(' ', '+')}&key={GOOGLE_BOOKS_API_KEY}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get('items'):
+            book_data = result['items'][0]['volumeInfo']
+            industry_identifiers = book_data.get('industryIdentifiers', [])
+            for identifier in industry_identifiers:
+                if identifier['type'] == 'ISBN_13':
+                    isbn = identifier['identifier']
+                    break
+                elif identifier['type'] == 'ISBN_10':
+                    isbn = identifier['identifier']
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Ошибка при запросе к Google Books API: {str(e)}. Генерируем ISBN.")
+
+    # Если ISBN не найден, генерируем его
+    if not isbn:
+        def generate_isbn():
+            prefix = random.choice(["978", "979"])
+            region = "0"
+            publisher = str(random.randint(0, 99999)).zfill(5)
+            book_number = str(random.randint(0, 999)).zfill(3)
+            isbn_base = prefix + region + publisher + book_number
+            checksum = 0
+            for i in range(12):
+                digit = int(isbn_base[i])
+                checksum += digit if i % 2 == 0 else digit * 3
+            checksum = (10 - (checksum % 10)) % 10
+            generated_isbn = isbn_base + str(checksum)
+            return generated_isbn if not Book.query.filter_by(isbn=generated_isbn).first() else generate_isbn()
+
+        isbn = generate_isbn()
+
+    return jsonify({"isbn": isbn}), 200
 
 @app.route('/api/books', methods=['POST'])
 def add_book():
@@ -917,8 +1305,8 @@ def add_book():
 
     data = request.json
 
-    # Проверяем, переданы ли все нужные данные (исключаем isbn из обязательных, так как можем сгенерировать)
-    required_fields = ["title", "author_id", "description", "user_id", "genre_ids"]
+    # Проверяем, переданы ли все нужные данные
+    required_fields = ["title", "author_id", "description", "user_id", "genre_ids", "isbn"]
     if not all(field in data for field in required_fields):
         return jsonify({"error": "Missing required fields"}), 400
 
@@ -930,92 +1318,83 @@ def add_book():
     user_id = data["user_id"]
     genre_ids = data["genre_ids"]
     status = data.get("status", "available")  # По умолчанию "available"
+    isbn = data["isbn"]
 
-    # Если ISBN передан, используем его, иначе генерируем
-    isbn = data.get("isbn")
-    if not isbn:
-        # Генерация ISBN-13
-        def generate_isbn():
-            # Префикс ISBN-13: 978 или 979
-            prefix = random.choice(["978", "979"])
-            # Код региона: 0 (пример, можно изменить)
-            region = "0"
-            # Код издателя: случайное 5-значное число
-            publisher = str(random.randint(0, 99999)).zfill(5)
-            # Номер книги: случайное 3-значное число
-            book_number = str(random.randint(0, 999)).zfill(3)
-            # Собираем первые 12 цифр
-            isbn_base = prefix + region + publisher + book_number
-            # Вычисляем контрольную цифру
-            checksum = 0
-            for i in range(12):
-                digit = int(isbn_base[i])
-                checksum += digit if i % 2 == 0 else digit * 3
-            checksum = (10 - (checksum % 10)) % 10
-            # Полный ISBN-13
-            generated_isbn = isbn_base + str(checksum)
-            
-            # Проверяем уникальность ISBN в базе данных
-            while Book.query.filter_by(isbn=generated_isbn).first():
-                # Если ISBN уже существует, генерируем новый
-                return generate_isbn()
-            
-            return generated_isbn
+    # Проверяем, совпадает ли user_id из сессии и запроса
+    if str(session.get("user_id")) != str(user_id):
+        return jsonify({"error": "Несоответствие идентификатора пользователя"}), 403
 
-        isbn = generate_isbn()
-
-    # Проверяем, что user_id соответствует сессии
-    if user_id != session.get("user_id"):
-        return jsonify({"error": "Недостаточно прав"}), 403
+    # Проверяем, существует ли пользователь
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
 
     # Проверяем, существуют ли переданные жанры
     existing_genres = Genre.query.filter(Genre.id.in_(genre_ids)).all()
     if len(existing_genres) != len(genre_ids):
         return jsonify({"error": "One or more genres do not exist"}), 400
 
-    # Создаем книгу
-    new_book = Book(
-        title=title,
-        author_id=author_id,
-        description=description,
-        safe_shelf_id=safe_shelf_id,
-        user_id=user_id if status == "in_hand" else None,  # Связываем с пользователем, если в руках
-        isbn=isbn,
-        status=status
-    )
-    db.session.add(new_book)
-    db.session.commit()
+    # Проверяем, существует ли книга с таким ISBN
+    if Book.query.filter_by(isbn=isbn).first():
+        return jsonify({"error": "Book with this ISBN already exists"}), 400
 
-    # Добавляем жанры в BookGenre
-    for genre_id in genre_ids:
-        book_genre = BookGenre(book_id=new_book.id, genre_id=genre_id)
-        db.session.add(book_genre)
+    try:
+        # Создаем книгу
+        new_book = Book(
+            title=title,
+            author_id=author_id,
+            description=description,
+            safe_shelf_id=safe_shelf_id,
+            user_id=user_id if status == "in_hand" else None,
+            isbn=isbn,
+            status=status
+        )
+        db.session.add(new_book)
+        db.session.flush()  # Получаем book.id
 
-    # Формируем новый путь книги
-    path = []
-    if status == "available" and safe_shelf_id:
-        path.append({
-            "user_id": None,  # Нет конкретного пользователя, книга на полке
-            "timestamp": datetime.now().isoformat(),
-            "action": "added",
-            "location": "safe_shelf",
-            "shelf_id": safe_shelf_id
-        })
-    elif status == "in_hand":
-        path.append({
-            "user_id": user_id,  # Пользователь, взявший книгу
-            "timestamp": datetime.now().isoformat(),
-            "action": "taken",
-            "location": "у пользователя"
-        })
+        # Добавляем жанры в BookGenre
+        for genre_id in genre_ids:
+            book_genre = BookGenre(book_id=new_book.id, genre_id=genre_id)
+            db.session.add(book_genre)
 
-    # Сохраняем путь как JSON
-    new_book.path = json.dumps(path) if path else json.dumps([])
+        # Формируем новый путь книги
+        path = []
+        if status == "available" and safe_shelf_id:
+            path.append({
+                "user_id": None,
+                "timestamp": datetime.now().isoformat(),
+                "action": "added",
+                "location": "safe_shelf",
+                "shelf_id": safe_shelf_id
+            })
+        elif status == "in_hand":
+            path.append({
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "action": "taken",
+                "location": "у пользователя"
+            })
 
-    db.session.commit()
+        new_book.path = json.dumps(path) if path else json.dumps([])
+
+        # Добавляем книгу в инвентарь, если статус "in_hand"
+        if status == "in_hand":
+            inventory_entry = UserInventory(
+                user_id=user_id,
+                book_id=new_book.id
+            )
+            db.session.add(inventory_entry)
+
+        # Завершаем транзакцию
+        db.session.commit()
+        logger.info(f"Книга создана и добавлена в инвентарь: book_id={new_book.id}, user_id={user_id}")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Ошибка при создании книги: {str(e)}")
+        return jsonify({"error": f"Не удалось создать книгу: {str(e)}"}), 500
 
     return jsonify({"message": "Book added successfully", "book_id": new_book.id, "isbn": isbn}), 201
-# Добавление книги в инвентарь — защищённый эндпоинт
+
 from datetime import datetime
 import json
 
@@ -1105,6 +1484,7 @@ def add_to_inventory():
         return jsonify({"error": "Ошибка при добавлении в инвентарь"}), 500
 
     return jsonify({"message": "Книга добавлена в инвентарь", "book_id": book_id}), 201
+
 # Удаление книги из инвентаря — защищённый эндпоинт
 @app.route('/api/inventory', methods=['DELETE'])
 def remove_from_inventory():
@@ -1231,63 +1611,7 @@ from flask import request, jsonify, session
 from app import app, db
 from models import UserInventory, Book
 
-@app.route('/api/inventory/<int:user_id>', methods=['GET'])
-def get_user_inventory(user_id):
-    if not session.get("user_id") or session.get("user_id") != user_id:
-        return jsonify({"error": "Требуется авторизация или доступ запрещён"}), 401
 
-    inventory_entries = UserInventory.query.filter_by(user_id=user_id).all()
-    inventory_data = [
-        {
-            "user_id": entry.user_id,
-            "book_id": entry.book_id,
-            "book": entry.book.to_json() if entry.book else None,
-            "added_at": entry.added_at.isoformat()
-        }
-        for entry in inventory_entries
-    ]
-    return jsonify(inventory_data), 200
-
-@app.route('/api/books/compatible', methods=['GET'])
-def get_compatible_books():
-    user_id = session.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Требуется авторизация"}), 401
-    
-    user = User.query.get_or_404(user_id)
-    books = Book.query.all()
-    
-    compatible_books = []
-    for book in books:
-        score = calculate_compatibility(book, user)
-        compatible_books.append({
-            "id": book.id,
-            "title": book.title,
-            "author_id": book.author_id,
-            "status": book.status,
-            "safe_shelf_id": book.safe_shelf_id,
-            "compatibility": score
-        })
-    
-    return jsonify(compatible_books), 200
-
-def calculate_compatibility(book, user):
-    score = 0
-    genre_weight = 0.4
-    author_weight = 0.3
-    status_weight = 0.3
-    
-    # Совместимость по жанрам
-    matching_genres = len(set(book.genre_ids) & set([g.id for g in user.preferences.genres])) if user.preferences.genres else 0
-    score += genre_weight * (matching_genres / len(book.genre_ids) if book.genre_ids else 0)
-    
-    # Совместимость по авторам
-    score += author_weight * (book.author_id in [a.id for a in user.preferences.authors] if user.preferences.authors else 0)
-    
-    # Совместимость по статусу
-    score += status_weight * (book.status == "available")
-    
-    return round(score, 2)
 
 
 
@@ -1389,105 +1713,341 @@ def take_book(book_id):
     return jsonify({"message": "Книга успешно взята", "book_id": book.id}), 200
 
 
-from flask import jsonify, request
-from app import app, db
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from config import EMAIL_USER, EMAIL_PASSWORD
-import logging
 
-# Настройка логирования
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+@app.route('/api/books/<int:id>', methods=['DELETE'])
+def delete_book(id):
+    logger.info(f"Сессия: {session}")
+    if not session.get("user_id"):
+        logger.error("Отсутствует user_id в сессии")
+        return jsonify({"error": "Требуется авторизация"}), 401
 
-def generate_html_table(book_list):
-    table = """
-    <table border="1" style="border-collapse: collapse; width: 100%;">
-        <thead>
-            <tr>
-                <th>Название</th>
-                <th>Автор</th>
-                <th>ISBN</th>
-                <th>Жанры</th>
-                <th>Место хранения</th>
-            </tr>
-        </thead>
-        <tbody>
-    """
-    for book in book_list:
-        table += f"""
-            <tr>
-                <td>{book.get('title', 'Без названия')}</td>
-                <td>{book.get('author', 'Неизвестный автор')}</td>
-                <td>{book.get('isbn', 'Не указан')}</td>
-                <td>{book.get('genres', 'Не указаны')}</td>
-                <td>{book.get('shelf', 'Не указано')}</td>
-            </tr>
-        """
-    table += """
-        </tbody>
-    </table>
-    """
-    return table
+    user_id = session.get("user_id")
+    
+    # Проверяем, существует ли пользователь
+    user = User.query.get(user_id)
+    if not user:
+        logger.error(f"Пользователь с id={user_id} не найден")
+        return jsonify({"error": "Пользователь не найден"}), 404
 
-@app.route('/api/send-email', methods=['POST'])
-def send_email():
+    # Проверяем, существует ли книга
+    book = Book.query.get(id)
+    if not book:
+        logger.error(f"Книга с id={id} не найдена")
+        return jsonify({"error": "Книга не найдена"}), 404
+
+    try:
+        # Удаляем связанные записи
+        BookGenre.query.filter_by(book_id=book.id).delete()
+        UserInventory.query.filter_by(book_id=book.id).delete()
+
+        # Удаляем книгу
+        db.session.delete(book)
+        db.session.commit()
+        logger.info(f"Книга удалена: book_id={id}, user_id={user_id}")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Ошибка при удалении книги: {str(e)}")
+        return jsonify({"error": f"Не удалось удалить книгу: {str(e)}"}), 500
+
+    return jsonify({"message": "Книга успешно удалена", "book_id": id}), 200
+
+@app.route('/api/books/update/<int:id>', methods=['PUT'])
+def edit_book(id):
+    logger.info(f"Сессия: {session}")
+    if not session.get("user_id"):
+        logger.error("Отсутствует user_id в сессии")
+        return jsonify({"error": "Требуется авторизация"}), 401
+
+    # Проверяем, существует ли книга
+    book = Book.query.get(id)
+    if not book:
+        logger.error(f"Книга с id={id} не найдена")
+        return jsonify({"error": "Книга не найдена"}), 404
+
+    data = request.json
+
+    # Проверяем, переданы ли данные
+    if not data:
+        logger.error("Данные не переданы")
+        return jsonify({"error": "Данные не переданы"}), 400
+
+    # Получаем данные из запроса
+    title = data.get("title", book.title)
+    author_id = data.get("author_id", book.author_id)
+    description = data.get("description", book.description)
+    safe_shelf_id = data.get("safe_shelf_id", book.safe_shelf_id)
+    user_id = data.get("user_id", session.get("user_id"))  # По умолчанию берем из сессии
+    genre_ids = data.get("genre_ids", [bg.genre_id for bg in book.genres])
+    status = data.get("status", book.status)
+    isbn = data.get("isbn", book.isbn)
+
+    logger.info(f"Полученные данные: {data}")
+
+    # Проверяем, существует ли пользователь
+    user = User.query.get(user_id)
+    if not user:
+        logger.error(f"Пользователь с id={user_id} не найден")
+        return jsonify({"error": "Пользователь не найден"}), 404
+
+    # Проверяем, является ли пользователь администратором
+    is_admin = user.role_id == 1
+    logger.info(f"Роль пользователя: {user.role_id}, администратор: {is_admin}")
+
+    # Для неадминов проверяем соответствие user_id
+    if not is_admin and str(session.get("user_id")) != str(user_id):
+        logger.error(f"Несоответствие user_id: сессия={session.get('user_id')}, запрос={user_id}")
+        return jsonify({"error": "Несоответствие идентификатора пользователя"}), 403
+
+    # Администратор может редактировать любые книги, игнорируя некоторые проверки
+    if not is_admin:
+        # Для неадминов проверяем, не принадлежит ли книга другому пользователю
+        if book.user_id and str(book.user_id) != str(user_id):
+            logger.error(f"Книга принадлежит другому пользователю: book.user_id={book.user_id}, user_id={user_id}")
+            return jsonify({"error": "Вы не можете редактировать книгу другого пользователя"}), 403
+
+    # Проверяем, существует ли книга с таким ISBN (кроме текущей книги), но только для неадминов
+    if not is_admin:
+        existing_book = Book.query.filter(Book.isbn == isbn, Book.id != id).first()
+        if existing_book:
+            logger.error(f"Книга с ISBN={isbn} уже существует")
+            return jsonify({"error": "Книга с таким ISBN уже существует"}), 400
+
+    # Проверяем жанры только для неадминов
+    if not is_admin:
+        existing_genres = Genre.query.filter(Genre.id.in_(genre_ids)).all()
+        if len(existing_genres) != len(genre_ids):
+            logger.error(f"Некорректные жанры: genre_ids={genre_ids}")
+            return jsonify({"error": "Один или несколько жанров не существуют"}), 400
+
+    try:
+        # Обновляем поля книги
+        book.title = title
+        book.author_id = author_id
+        book.description = description
+        book.safe_shelf_id = safe_shelf_id
+        book.isbn = isbn
+        book.status = status
+        book.user_id = user_id if status == "in_hand" else None
+
+        # Обновляем жанры: удаляем старые и добавляем новые
+        BookGenre.query.filter_by(book_id=book.id).delete()
+        for genre_id in genre_ids:
+            book_genre = BookGenre(book_id=book.id, genre_id=genre_id)
+            db.session.add(book_genre)
+
+        # Обновляем путь книги
+        path = json.loads(book.path) if book.path else []
+        if status == "available" and safe_shelf_id and book.status != "available":
+            path.append({
+                "user_id": None,
+                "timestamp": datetime.now().isoformat(),
+                "action": "returned",
+                "location": "safe_shelf",
+                "shelf_id": safe_shelf_id
+            })
+        elif status == "in_hand" and book.status != "in_hand":
+            path.append({
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "action": "taken",
+                "location": "у пользователя"
+            })
+        book.path = json.dumps(path)
+
+        # Обновляем инвентарь
+        UserInventory.query.filter_by(book_id=book.id).delete()
+        if status == "in_hand":
+            inventory_entry = UserInventory(user_id=user_id, book_id=book.id)
+            db.session.add(inventory_entry)
+
+        # Завершаем транзакцию
+        db.session.commit()
+        logger.info(f"Книга обновлена: book_id={book.id}, user_id={user_id}")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Ошибка при обновлении книги: {str(e)}")
+        return jsonify({"error": f"Не удалось обновить книгу: {str(e)}"}), 500
+
+    return jsonify({"message": "Книга успешно обновлена", "book_id": book.id, "isbn": isbn}), 200
+
+
+@app.route('/api/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    try:
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'Пользователь не найден'}), 404
+
+        return jsonify(user.to_json()), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении пользователя: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+    
+    from werkzeug.security import generate_password_hash
+
+@app.route('/api/users', methods=['POST'])
+def create_user():
     try:
         data = request.get_json()
-        recipient_email = data.get('email')
-        message = data.get('message')
-        book_list = data.get('books', [])
+        if not data or not all(key in data for key in ['name', 'email', 'role_id', 'password']):
+            return jsonify({'error': 'Не указаны все обязательные поля'}), 400
 
-        if not recipient_email or not message:
-            return jsonify({"error": "Email и сообщение обязательны"}), 400
+        # Проверяем, существует ли email
+        if User.query.filter_by(email=data['email']).first():
+            return jsonify({'error': 'Email уже зарегистрирован'}), 400
 
-        # Настройки SMTP
-        sender_email = EMAIL_USER
-        password = EMAIL_PASSWORD
+        # Проверяем, существует ли роль
+        role = Role.query.get(data['role_id'])
+        if not role:
+            return jsonify({'error': 'Указанная роль не найдена'}), 404
 
-        # Создание письма
-        msg = MIMEMultipart()
-        msg['Subject'] = 'Обратная связь с сайта'
-        msg['From'] = sender_email
-        msg['To'] = recipient_email
+        # Создаём нового пользователя
+        new_user = User(
+            name=data['name'],
+            email=data['email'],
+            role_id=int(data['role_id']),
+            password=generate_password_hash(data['password'], method='pbkdf2:sha256'),
+            bio=data.get('bio'),
+            phone=data.get('phone'),
+            birth_date=datetime.datetime.strptime(data['birth_date'], '%Y-%m-%d').date() if data.get('birth_date') else None,
+            avatar_url=data.get('avatar_url')
+        )
+        db.session.add(new_user)
+        db.session.commit()
 
-        # Генерируем HTML-таблицу из списка книг
-        html_table = generate_html_table(book_list)
+        return jsonify(new_user.to_json()), 201
 
-        # Формируем тело письма: сообщение + таблица
-        html_body = f"""
-        <html>
-            <body>
-                <p>{message}</p>
-                <h3>Список доступных книг:</h3>
-                {html_table}
-            </body>
-        </html>
-        """
-        msg.attach(MIMEText(html_body, 'html'))
-
-        # Подключение к SMTP-серверу Gmail
-        try:
-            with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                server.starttls()
-                server.login(sender_email, password)
-                server.send_message(msg)
-                logger.debug(f"Письмо успешно отправлено на {recipient_email}")
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"Ошибка аутентификации SMTP: {str(e)}")
-            return jsonify({"error": "Ошибка аутентификации. Проверьте email и пароль приложения."}), 401
-        except smtplib.SMTPException as e:
-            logger.error(f"Ошибка SMTP: {str(e)}")
-            return jsonify({"error": f"Ошибка при отправке письма: {str(e)}"}), 500
-        except Exception as e:
-            logger.error(f"Неизвестная ошибка SMTP: {str(e)}")
-            return jsonify({"error": f"Неизвестная ошибка при отправке письма: {str(e)}"}), 500
-
-        return jsonify({
-            "message": "Письмо с таблицей успешно отправлено",
-            "recipient": recipient_email
-        }), 200
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        db.session.rollback()
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except ValueError as e:
+        logger.error(f'Ошибка формата данных: {str(e)}')
+        return jsonify({'error': f'Неверный формат данных: {str(e)}'}), 400
     except Exception as e:
-        logger.error(f"Общая ошибка при обработке запроса: {str(e)}")
-        return jsonify({"error": f"Ошибка при обработке запроса: {str(e)}"}), 500
+        logger.error(f'Ошибка при создании пользователя: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+    
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    try:
+        data = request.get_json()
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'Пользователь не найден'}), 404
+
+        if 'role_id' in data:
+            role = Role.query.get(data['role_id'])
+            if not role:
+                return jsonify({'error': 'Указанная роль не найдена'}), 404
+            user.role_id = int(data['role_id'])
+
+        if 'bio' in data:
+            user.bio = data['bio']
+        if 'phone' in data:
+            user.phone = data['phone']
+        if 'birth_date' in data:
+            user.birth_date = datetime.datetime.strptime(data['birth_date'], '%Y-%m-%d').date() if data['birth_date'] else None
+        if 'avatar_url' in data:
+            user.avatar_url = data['avatar_url']
+
+        db.session.commit()
+
+        return jsonify(user.to_json()), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        db.session.rollback()
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except ValueError as e:
+        logger.error(f'Ошибка формата данных: {str(e)}')
+        return jsonify({'error': f'Неверный формат данных: {str(e)}'}), 400
+    except Exception as e:
+        logger.error(f'Ошибка при обновлении пользователя: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+    
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    try:
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'Пользователь не найден'}), 404
+
+        db.session.delete(user)
+        db.session.commit()
+
+        return jsonify({'message': 'Пользователь удалён'}), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        db.session.rollback()
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при удалении пользователя: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+    
+@app.route('/api/book/movements/<int:book_id>', methods=['GET'])
+def get_book_movements(book_id):
+    try:
+        # Получаем книгу по ID
+        book = Book.query.get(book_id)
+        if not book:
+            logger.error(f"Книга не найдена: book_id={book_id}")
+            return jsonify({"error": "Книга не найдена"}), 404
+
+        # Извлекаем и декодируем путь
+        path_data = book.path
+        if not path_data or (isinstance(path_data, str) and not path_data.strip()):
+            logger.info(f"Путь книги пуст: book_id={book_id}")
+            return jsonify({"message": "История передвижений отсутствует"}), 200
+
+        # Преобразуем JSON-строку в список, если это строка
+        if isinstance(path_data, str):
+            import json
+            path_data = json.loads(path_data)
+
+        # Преобразуем данные пути в читаемый формат
+        movements = []
+        for movement in path_data:
+            user_id = movement.get("user_id")
+            user_name = User.query.get(user_id).name if user_id else "Не указан"
+            timestamp = movement.get("timestamp")
+            action = movement.get("action")
+            location = movement.get("location")
+            shelf_id = movement.get("shelf_id")
+
+            # Форматируем дату и время
+            from datetime import datetime
+            date_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            formatted_date = date_time.strftime("%d.%m.%Y")
+            formatted_time = date_time.strftime("%H:%M:%S")
+
+            # Собираем информацию о движении
+            movement_info = {
+                "user_id": user_id,
+                "user_name": user_name,
+                "action": action,
+                "location": location,
+                "shelf_id": shelf_id,
+                "date": formatted_date,
+                "time": formatted_time
+            }
+            movements.append(movement_info)
+
+        logger.info(f"История передвижений книги получена: book_id={book_id}, movements_count={len(movements)}")
+        return jsonify({"book_id": book_id, "movements": movements}), 200
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка декодирования JSON пути книги: book_id={book_id}, error={str(e)}")
+        return jsonify({"error": "Ошибка обработки истории передвижений"}), 500
+    except SQLAlchemyError as e:
+        logger.error(f"Ошибка базы данных при получении истории: book_id={book_id}, error={str(e)}")
+        return jsonify({"error": "Ошибка базы данных"}), 500
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка при получении истории: book_id={book_id}, error={str(e)}")
+        return jsonify({"error": f"Ошибка: {str(e)}"}), 500

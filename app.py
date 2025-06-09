@@ -3,18 +3,17 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_migrate import Migrate
 import os
+from sqlalchemy.dialects.postgresql import JSONB
 
-# Инициализация приложения Flask
 app = Flask(__name__)
 
-# Настройка CORS (поддержка кук + все origins или настрой конкретный)
-CORS(app, resources={r"/api/*": {"origins": "https://front-production-2cc8.up.railway.app"}})
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 
-# Конфигурация базы данных и сессий
-app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///crossbooking.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:GKOlBxhwdzpMiCKJfmIhsIMltIusqCmV@yamanote.proxy.rlwy.net:40203/postgres'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = "your-secret-key-here"
 app.config['UPLOAD_FOLDER'] = 'uploads/avatars'
+
 
 # Инициализация базы и миграций
 db = SQLAlchemy(app)
