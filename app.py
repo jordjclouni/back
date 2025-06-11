@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:GKOlBxhwdzpMiCKJfmIhsIMltIusqCmV@yamanote.proxy.rlwy.net:40203/postgres'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:jRZecIKYBXtAMTcrBElbkoItwqqahUru@yamanote.proxy.rlwy.net:48128/railway'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = "your-secret-key-here"
 app.config['UPLOAD_FOLDER'] = 'uploads/avatars'
