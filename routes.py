@@ -1101,26 +1101,28 @@ def login_user():
         if not user or not check_password_hash(user.password, password):
             return jsonify({"error": "Неверный email или пароль"}), 401
 
-        # Генерируем JWT токен
+        # Генерация токена
         token = jwt.encode(
             {'user_id': user.id, 'role_id': user.role_id},
             app.config['SECRET_KEY'],
             algorithm="HS256"
         )
 
-        # Сохраняем данные пользователя в сессии для бэкенда
-        session["user_id"] = user.id
-        session["role_id"] = user.role_id
-        session["name"] = user.name
-        session["email"] = user.email
-        session["avatar_url"] = user.avatar_url
-        session["bio"] = user.bio
-        session["phone"] = user.phone
-        session["birth_date"] = user.birth_date.isoformat() if user.birth_date else None
+        # Обновляем поля из фронта (если пришли)
+        user.name = data.get("name", user.name)
+        user.avatar_url = data.get("avatar_url", user.avatar_url)
+        user.bio = data.get("bio", user.bio)
+        user.phone = data.get("phone", user.phone)
+        birth_date = data.get("birth_date")
+        if birth_date:
+            user.birth_date = datetime.fromisoformat(birth_date)
+
+        # Сохраняем обновлённого пользователя
+        db.session.commit()
 
         return jsonify({
             "message": "Успешный вход",
-            "token": token,  # Для фронтенда
+            "token": token,
             "user": {
                 "id": user.id,
                 "role_id": user.role_id,
@@ -1135,7 +1137,6 @@ def login_user():
     except Exception as e:
         logger.error(f"Ошибка при входе: {str(e)}")
         return jsonify({"error": f"Ошибка при входе: {str(e)}"}), 500
-    
 # Выход пользователя
 @app.route("/api/logout", methods=["POST"])
 def logout_user():
@@ -1310,9 +1311,6 @@ def fetch_isbn():
 
 @app.route('/api/books', methods=['POST'])
 def add_book():
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
     data = request.json
 
     # Проверяем, переданы ли все нужные данные
@@ -1329,10 +1327,6 @@ def add_book():
     genre_ids = data["genre_ids"]
     status = data.get("status", "available")  # По умолчанию "available"
     isbn = data["isbn"]
-
-    # Проверяем, совпадает ли user_id из сессии и запроса
-    if str(session.get("user_id")) != str(user_id):
-        return jsonify({"error": "Несоответствие идентификатора пользователя"}), 403
 
     # Проверяем, существует ли пользователь
     user = User.query.get(user_id)
@@ -1367,7 +1361,7 @@ def add_book():
             book_genre = BookGenre(book_id=new_book.id, genre_id=genre_id)
             db.session.add(book_genre)
 
-        # Формируем новый путь книги
+        # Формируем путь книги
         path = []
         if status == "available" and safe_shelf_id:
             path.append({
@@ -1395,15 +1389,18 @@ def add_book():
             )
             db.session.add(inventory_entry)
 
-        # Завершаем транзакцию
         db.session.commit()
         logger.info(f"Книга создана и добавлена в инвентарь: book_id={new_book.id}, user_id={user_id}")
+        return jsonify({
+            "message": "Book added successfully",
+            "book_id": new_book.id,
+            "isbn": isbn
+        }), 201
+
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка при создании книги: {str(e)}")
         return jsonify({"error": f"Не удалось создать книгу: {str(e)}"}), 500
-
-    return jsonify({"message": "Book added successfully", "book_id": new_book.id, "isbn": isbn}), 201
 
 from datetime import datetime
 import json
