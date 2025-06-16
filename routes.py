@@ -1625,40 +1625,26 @@ from models import UserInventory, Book
 
 @app.route('/api/books/<int:book_id>/release', methods=['PUT'])
 def release_book(book_id):
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
-    data = request.json
-    user_id = data.get("user_id")
-    safe_shelf_id = data.get("safe_shelf_id")
-
-    if not user_id or not safe_shelf_id:
-        return jsonify({"error": "Требуются user_id и safe_shelf_id"}), 400
-
-    if user_id != session.get("user_id"):
-        return jsonify({"error": "Недостаточно прав"}), 403
-
     try:
+        # Получаем данные из тела запроса
+        data = request.json
+        user_id = data.get("user_id")
+        safe_shelf_id = data.get("safe_shelf_id")
+        new_status = data.get("status", "available")  # По умолчанию "available"
+
         # Получаем книгу
         book = Book.query.get_or_404(book_id)
-        if book.user_id != user_id or book.status != "in_hand":
-            return jsonify({"error": "Книга не принадлежит вам или недоступна для отпуска"}), 400
 
-        # Проверяем, существует ли указанная ячейка
-        shelf = SafeShelf.query.get(safe_shelf_id)
-        if not shelf:
-            return jsonify({"error": "Указанная ячейка не существует"}), 400
-
-        # Обновляем книгу
-        book.user_id = None  # Теперь это допустимо, так как nullable=True
-        book.status = "available"
+        # Обновляем книгу данными из запроса
+        book.user_id = None
+        book.status = new_status
         book.safe_shelf_id = safe_shelf_id
 
         # Обновляем путь книги
         path = json.loads(book.path) if book.path else []
         path.append({
             "user_id": None,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.datetime.now().isoformat(),
             "action": "returned",
             "location": "safe_shelf",
             "shelf_id": safe_shelf_id
