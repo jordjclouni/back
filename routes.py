@@ -1644,7 +1644,7 @@ def release_book(book_id):
         path = json.loads(book.path) if book.path else []
         path.append({
             "user_id": None,
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "action": "returned",
             "location": "safe_shelf",
             "shelf_id": safe_shelf_id
