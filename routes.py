@@ -1381,6 +1381,7 @@ def add_book():
 
         new_book.path = json.dumps(path) if path else json.dumps([])
 
+
         # Добавляем книгу в инвентарь, если статус "in_hand"
         if status == "in_hand":
             inventory_entry = UserInventory(
