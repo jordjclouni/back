@@ -1623,65 +1623,51 @@ from models import UserInventory, Book
 
 
 
-def require_user_id(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        user_id = request.headers.get("X-User-Id")
-        if not user_id:
-            return jsonify({"error": "Требуется авторизация (X-User-Id)"}), 401
 
-        try:
-            user_id = int(user_id)
-        except ValueError:
-            return jsonify({"error": "Неверный формат user_id"}), 400
 
-        # Проверяем существование пользователя в базе
-        from models import User  # Импортируйте модель User из вашего приложения
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({"error": "Пользователь не найден"}), 404
-
-        # Сохраняем user_id в g для использования в функции
-        g.user_id = user_id
-        return f(*args, **kwargs)
-
-    return decorated_function
 @app.route('/api/books/<int:book_id>/release', methods=['PUT'])
-@require_user_id
-def release_book(user_id, book_id):
+def release_book(book_id):
+    if not session.get("user_id"):
+        return jsonify({"error": "Требуется авторизация"}), 401
+
     data = request.json
-    provided_user_id = data.get("user_id")
+    user_id = data.get("user_id")
     safe_shelf_id = data.get("safe_shelf_id")
 
-    if not provided_user_id or not safe_shelf_id:
+    if not user_id or not safe_shelf_id:
         return jsonify({"error": "Требуются user_id и safe_shelf_id"}), 400
 
-    if int(provided_user_id) != user_id:
+    if user_id != session.get("user_id"):
         return jsonify({"error": "Недостаточно прав"}), 403
 
     try:
+        # Получаем книгу
         book = Book.query.get_or_404(book_id)
         if book.user_id != user_id or book.status != "in_hand":
             return jsonify({"error": "Книга не принадлежит вам или недоступна для отпуска"}), 400
 
+        # Проверяем, существует ли указанная ячейка
         shelf = SafeShelf.query.get(safe_shelf_id)
         if not shelf:
             return jsonify({"error": "Указанная ячейка не существует"}), 400
 
-        book.user_id = None
+        # Обновляем книгу
+        book.user_id = None  # Теперь это допустимо, так как nullable=True
         book.status = "available"
         book.safe_shelf_id = safe_shelf_id
 
+        # Обновляем путь книги
         path = json.loads(book.path) if book.path else []
         path.append({
             "user_id": None,
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "action": "returned",
             "location": "safe_shelf",
             "shelf_id": safe_shelf_id
         })
         book.path = json.dumps(path)
 
+        # Удаляем запись из UserInventory, если существует
         user_inventory = UserInventory.query.filter_by(user_id=user_id, book_id=book_id).first()
         if user_inventory:
             db.session.delete(user_inventory)
@@ -1691,7 +1677,7 @@ def release_book(user_id, book_id):
         return jsonify({
             "message": "Книга отпущена в ячейку",
             "book_id": book.id,
-            "book": {"title": book.title}  # Адаптируйте под to_json()
+            "book": book.to_json()
         }), 200
 
     except Exception as e:
