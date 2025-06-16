@@ -1108,19 +1108,21 @@ def login_user():
             algorithm="HS256"
         )
 
-        # Сохраняем данные пользователя в сессии для бэкенда
-        session["user_id"] = user.id
-        session["role_id"] = user.role_id
-        session["name"] = user.name
-        session["email"] = user.email
-        session["avatar_url"] = user.avatar_url
-        session["bio"] = user.bio
-        session["phone"] = user.phone
-        session["birth_date"] = user.birth_date.isoformat() if user.birth_date else None
+        # Сохраняем данные пользователя в сессии на бэкенде (аналог localStorage)
+        session["user"] = {
+            "id": user.id,
+            "role_id": user.role_id,
+            "name": user.name,
+            "email": user.email,
+            "avatar_url": user.avatar_url,
+            "bio": user.bio,
+            "phone": user.phone,
+            "birth_date": user.birth_date.isoformat() if user.birth_date else None
+        }
 
         return jsonify({
             "message": "Успешный вход",
-            "token": token,  # Для фронтенда
+            "token": token,
             "user": {
                 "id": user.id,
                 "role_id": user.role_id,
@@ -1135,7 +1137,7 @@ def login_user():
     except Exception as e:
         logger.error(f"Ошибка при входе: {str(e)}")
         return jsonify({"error": f"Ошибка при входе: {str(e)}"}), 500
-    
+     
 # Выход пользователя
 @app.route("/api/logout", methods=["POST"])
 def logout_user():
@@ -1623,21 +1625,38 @@ from models import UserInventory, Book
 
 
 
-
+def require_user_id(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        user_id = request.headers.get("X-User-Id")
+        if not user_id:
+            user_id = session.get("user_id")
+            if not user_id:
+                return jsonify({"error": "Требуется авторизация (X-User-Id или сессия)"}), 401
+        else:
+            try:
+                user_id = int(user_id)
+            except ValueError:
+                return jsonify({"error": "Неверный формат user_id"}), 400
+        g.user_id = user_id
+        return f(*args, **kwargs)
+    return decorated_function
 
 @app.route('/api/books/<int:book_id>/release', methods=['PUT'])
+@require_user_id
 def release_book(book_id):
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
+    user_id = getattr(g, 'user_id', None)
+    if not user_id:
+        return jsonify({"error": "Не авторизован"}), 401
 
     data = request.json
-    user_id = data.get("user_id")
+    provided_user_id = data.get("user_id")
     safe_shelf_id = data.get("safe_shelf_id")
 
-    if not user_id or not safe_shelf_id:
+    if not provided_user_id or not safe_shelf_id:
         return jsonify({"error": "Требуются user_id и safe_shelf_id"}), 400
 
-    if user_id != session.get("user_id"):
+    if int(provided_user_id) != user_id:
         return jsonify({"error": "Недостаточно прав"}), 403
 
     try:
