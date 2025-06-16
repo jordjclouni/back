@@ -13,7 +13,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:jRZecIKYBXtAMTcrB
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = "your-secret-key-here"
 app.config['UPLOAD_FOLDER'] = 'uploads/avatars'
-
+app.config["SESSION_TYPE"] = "filesystem"  # Храним сессии в файлах (можно использовать Redis для продакшена)
+app.config["SESSION_PERMANENT"] = False
 
 # Инициализация базы и миграций
 db = SQLAlchemy(app)
