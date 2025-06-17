@@ -1408,9 +1408,6 @@ import json
 
 @app.route('/api/inventory', methods=['POST'])
 def add_to_inventory():
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
     data = request.json
     user_id = data.get("user_id")
     book_id = data.get("book_id")
@@ -1421,16 +1418,9 @@ def add_to_inventory():
     # Преобразуем user_id и book_id в int
     try:
         user_id = int(user_id)
-    except ValueError:
-        return jsonify({"error": "Некорректный формат user_id"}), 400
-
-    try:
         book_id = int(book_id)
     except ValueError:
-        return jsonify({"error": "Некорректный формат book_id"}), 400
-
-    if user_id != session.get("user_id"):
-        return jsonify({"error": "Недостаточно прав"}), 403
+        return jsonify({"error": "Некорректный формат user_id или book_id"}), 400
 
     # Проверяем, существует ли пользователь и книга
     user = User.query.get(user_id)
@@ -1473,7 +1463,7 @@ def add_to_inventory():
         logger.error(f"Ошибка при обновлении пути: {str(e)}")
         return jsonify({"error": "Ошибка при обновлении пути книги"}), 500
 
-    # Создаём новую запись в ИнвентарьПользователей
+    # Создаём новую запись в Инвентарь
     try:
         inventory_entry = UserInventory(
             user_id=user_id,
@@ -1484,7 +1474,7 @@ def add_to_inventory():
         # Обновляем книгу
         book.user_id = user_id
         book.status = "in_hand"
-        book.path = json.dumps(current_path)  # Сериализуем список в JSON-строку
+        book.path = json.dumps(current_path)  # Сериализуем список
         db.session.commit()
     except Exception as e:
         db.session.rollback()
