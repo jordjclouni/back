@@ -612,42 +612,37 @@ def create_topic():
 
     return jsonify({"message": "Тема создана", "id": new_topic.id}), 201
 
-# Удаление темы и всех её сообщений
+@app.route('/api/messages/<int:id>', methods=['DELETE'])
+def delete_message(id):
+    if not session.get("user_id"):
+        return jsonify({"error": "Требуется авторизация"}), 401
+
+    data = request.get_json()
+    role_id = data.get("role_id")
+    if role_id != 1:
+        return jsonify({"error": "Недостаточно прав"}), 403
+
+    message = Message.query.get_or_404(id)
+    db.session.delete(message)
+    db.session.commit()
+    return jsonify({"message": "Сообщение удалено"}), 200
+
 @app.route('/api/topic/<int:id>', methods=['DELETE'])
 def delete_topic(id):
     if not session.get("user_id"):
         return jsonify({"error": "Требуется авторизация"}), 401
 
-    user = User.query.get(session["user_id"])
-    if not user or user.role.name != "admin":
+    data = request.get_json()
+    role_id = data.get("role_id")
+    if role_id != 1:
         return jsonify({"error": "Недостаточно прав"}), 403
 
-    try:
-        topic = Topic.query.get_or_404(id)
-        Message.query.filter_by(topic_id=id).delete()
-        db.session.delete(topic)
-        db.session.commit()
-        return jsonify({"message": "Тема удалена"}), 200
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Ошибка при удалении темы {id}: {str(e)}")
-        return jsonify({"error": f"Ошибка при удалении темы: {str(e)}"}), 500
-
-# Удаление одного сообщения
-@app.route('/api/messages/<int:message_id>', methods=['DELETE'])
-def delete_message(message_id):
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
-    user = User.query.get(session["user_id"])
-    if not user or user.role_id != 1:
-        return jsonify({"error": "Недостаточно прав"}), 403
-
-    message = Message.query.get_or_404(message_id)
-    db.session.delete(message)
+    topic = Topic.query.get_or_404(id)
+    # Можно добавить удаление связанных сообщений
+    Message.query.filter_by(topic_id=id).delete()
+    db.session.delete(topic)
     db.session.commit()
-    return jsonify({"message": "Сообщение удалено"}), 200
-
+    return jsonify({"message": "Тема удалена"}), 200
 
 @app.route('/api/safeshelves', methods=['GET'])
 def get_safe_shelves():
