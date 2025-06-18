@@ -612,6 +612,27 @@ def create_topic():
 
     return jsonify({"message": "Тема создана", "id": new_topic.id}), 201
 
+# Удаление темы и всех её сообщений
+@app.route('/api/topic/<int:id>', methods=['DELETE'])
+def delete_topic(id):
+    if not session.get("user_id"):
+        return jsonify({"error": "Требуется авторизация"}), 401
+
+    user = User.query.get(session["user_id"])
+    if not user or user.role.name != "admin":
+        return jsonify({"error": "Недостаточно прав"}), 403
+
+    try:
+        topic = Topic.query.get_or_404(id)
+        Message.query.filter_by(topic_id=id).delete()
+        db.session.delete(topic)
+        db.session.commit()
+        return jsonify({"message": "Тема удалена"}), 200
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Ошибка при удалении темы {id}: {str(e)}")
+        return jsonify({"error": f"Ошибка при удалении темы: {str(e)}"}), 500
+
 
 @app.route('/api/safeshelves', methods=['GET'])
 def get_safe_shelves():
