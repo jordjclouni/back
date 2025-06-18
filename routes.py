@@ -460,32 +460,14 @@ def send_message(conversation_id):
         logger.error(f'Ошибка при отправке сообщения: {str(e)}')
         return jsonify({'error': f'Ошибка: {str(e)}'}), 500
     
-import os
-from flask import Flask, request, jsonify, send_from_directory, session, url_for
-from werkzeug.utils import secure_filename
-from sqlalchemy.exc import SQLAlchemyError
-from models import User  # Убедись, что импортируешь свою модель User
-from app import db       # И свою базу данных
-import logging
-
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-
-# === Настройки ===
-UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploads', 'avatars')
+# Папка для хранения аватаров
+UPLOAD_FOLDER = 'uploads/avatars'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # Ограничение 5MB
 
-# === Проверка и создание папки ===
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
-# === Проверка расширения файла ===
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
 @app.route('/api/users', methods=['GET'])
 def get_users():
     try:
@@ -527,27 +509,16 @@ def upload_avatar():
         if not user:
             return jsonify({"error": "Пользователь не найден"}), 404
 
-        # Удаляем старый файл (если есть)
-        if user.avatar_url:
-            old_path = user.avatar_url.replace("/uploads/avatars/", "")
-            try:
-                os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_path))
-            except Exception:
-                pass
-
-        # Сохраняем новый файл
-        filename = secure_filename(f"user{user.id}_{file.filename}")
+        # Сохраняем файл с уникальным именем
+        filename = secure_filename(f"{user.id}_{file.filename}")
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(file_path)
 
-        # Обновляем профиль пользователя
-        user.avatar_url = f"/uploads/avatars/{filename}"
+        # Обновляем URL аватара в профиле
+        user.avatar_url = f"/{file_path}"
         db.session.commit()
 
-        # Отдаём полный путь
-        full_url = url_for('serve_avatar', filename=filename, _external=True)
-        return jsonify({"message": "Аватар обновлён", "avatar_url": full_url}), 200
-
+        return jsonify({"message": "Аватар обновлён", "avatar_url": user.avatar_url}), 200
     except Exception as e:
         logger.error(f"Ошибка при загрузке аватара: {str(e)}")
         return jsonify({"error": f"Ошибка при загрузке аватара: {str(e)}"}), 500
