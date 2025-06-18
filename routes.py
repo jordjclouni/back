@@ -459,35 +459,32 @@ def send_message(conversation_id):
         db.session.rollback()
         logger.error(f'Ошибка при отправке сообщения: {str(e)}')
         return jsonify({'error': f'Ошибка: {str(e)}'}), 500
-    
-# Папка для хранения аватаров
-UPLOAD_FOLDER = 'uploads/avatars'
+
+import os
+from flask import Flask, request, jsonify, send_from_directory, session, url_for
+from werkzeug.utils import secure_filename
+from sqlalchemy.exc import SQLAlchemyError
+from models import User  # Убедись, что импортируешь свою модель User
+from app import db       # И свою базу данных
+import logging
+
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# === Настройки ===
+UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploads', 'avatars')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # Ограничение 5MB
 
+# === Проверка и создание папки ===
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# === Проверка расширения файла ===
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-@app.route('/api/users', methods=['GET'])
-def get_users():
-    try:
-        users = User.query.all()
-        if not users:
-            return jsonify({'message': 'Пользователи не найдены'}), 200
-
-        return jsonify([{
-            'user_id': user.id,
-            'name': user.name,
-            'email': user.email
-        } for user in users]), 200
-
-    except SQLAlchemyError as e:
-        logger.error(f'Ошибка базы данных: {str(e)}')
-        return jsonify({'error': 'Ошибка базы данных'}), 500
-    except Exception as e:
-        logger.error(f'Ошибка при получении пользователей: {str(e)}')
-        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
-
 
 @app.route('/api/user/avatar', methods=['POST'])
 def upload_avatar():
@@ -509,25 +506,56 @@ def upload_avatar():
         if not user:
             return jsonify({"error": "Пользователь не найден"}), 404
 
-        # Сохраняем файл с уникальным именем
-        filename = secure_filename(f"{user.id}_{file.filename}")
+        # Удаляем старый файл (если есть)
+        if user.avatar_url:
+            old_path = user.avatar_url.replace("/uploads/avatars/", "")
+            try:
+                os.remove(os.path.join(app.config['UPLOAD_FOLDER'], old_path))
+            except Exception:
+                pass
+
+        # Сохраняем новый файл
+        filename = secure_filename(f"user{user.id}_{file.filename}")
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(file_path)
 
-        # Обновляем URL аватара в профиле
-        user.avatar_url = f"/{file_path}"
+        # Обновляем профиль пользователя
+        user.avatar_url = f"/uploads/avatars/{filename}"
         db.session.commit()
 
-        return jsonify({"message": "Аватар обновлён", "avatar_url": user.avatar_url}), 200
+        # Отдаём полный путь
+        full_url = url_for('serve_avatar', filename=filename, _external=True)
+        return jsonify({"message": "Аватар обновлён", "avatar_url": full_url}), 200
+
     except Exception as e:
         logger.error(f"Ошибка при загрузке аватара: {str(e)}")
         return jsonify({"error": f"Ошибка при загрузке аватара: {str(e)}"}), 500
-
-
-# Маршрут для отдачи файлов аватаров
 @app.route('/uploads/avatars/<filename>')
 def serve_avatar(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    try:
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    except FileNotFoundError:
+        return jsonify({"error": "Файл не найден"}), 404
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    try:
+        users = User.query.all()
+        if not users:
+            return jsonify({'message': 'Пользователи не найдены'}), 200
+
+        return jsonify([{
+            'user_id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'avatar_url': url_for('serve_avatar', filename=user.avatar_url.replace("/uploads/avatars/", ""), _external=True) if user.avatar_url else None
+        } for user in users]), 200
+
+    except SQLAlchemyError as e:
+        logger.error(f'Ошибка базы данных: {str(e)}')
+        return jsonify({'error': 'Ошибка базы данных'}), 500
+    except Exception as e:
+        logger.error(f'Ошибка при получении пользователей: {str(e)}')
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
 
 # Настройка логирования
 logging.basicConfig(level=logging.DEBUG)
