@@ -633,6 +633,21 @@ def delete_topic(id):
         logger.error(f"Ошибка при удалении темы {id}: {str(e)}")
         return jsonify({"error": f"Ошибка при удалении темы: {str(e)}"}), 500
 
+# Удаление одного сообщения
+@app.route('/api/messages/<int:message_id>', methods=['DELETE'])
+def delete_message(message_id):
+    if not session.get("user_id"):
+        return jsonify({"error": "Требуется авторизация"}), 401
+
+    user = User.query.get(session["user_id"])
+    if not user or user.role_id != 1:
+        return jsonify({"error": "Недостаточно прав"}), 403
+
+    message = Message.query.get_or_404(message_id)
+    db.session.delete(message)
+    db.session.commit()
+    return jsonify({"message": "Сообщение удалено"}), 200
+
 
 @app.route('/api/safeshelves', methods=['GET'])
 def get_safe_shelves():
