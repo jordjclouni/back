@@ -13,6 +13,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:jRZecIKYBXtAMTcrB
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = "your-secret-key-here"
 app.config['UPLOAD_FOLDER'] = 'uploads/avatars'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 app.config["SESSION_TYPE"] = "filesystem"  # Храним сессии в файлах (можно использовать Redis для продакшена)
 app.config["SESSION_PERMANENT"] = False
 
@@ -22,6 +23,7 @@ migrate = Migrate(app, db)
 
 # Путь к папке frontend/dist
 dist_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Маршрут: установка куки
 @app.route("/set-cookie")
