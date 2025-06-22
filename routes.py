@@ -538,7 +538,37 @@ import logging
 # Настройка логгера (если ещё не настроен)
 logger = logging.getLogger(__name__)
 
+@app.route('/api/topics', methods=['GET'])
+def get_topics():
+    try:
+        topics = Topic.query.order_by(Topic.created_at.desc()).all()
+        return jsonify([topic.to_json() for topic in topics])
+    except Exception as e:
+        logger.error(f"Ошибка при получении тем форума: {str(e)}")
+        return jsonify({"error": f"Ошибка при получении тем: {str(e)}"}), 500
 
+# Создание новой темы
+@app.route('/api/topics', methods=['POST'])
+def create_topic():
+    if not session.get("user_id"):
+        return jsonify({"error": "Требуется авторизация"}), 401
+
+    data = request.json
+    title = data.get("title")
+    description = data.get("description")
+
+    if not title or not description:
+        return jsonify({"error": "Название и описание обязательны"}), 400
+
+    new_topic = Topic(
+        title=title,
+        description=description,
+        user_id=session.get("user_id")
+    )
+    db.session.add(new_topic)
+    db.session.commit()
+
+    return jsonify({"message": "Тема создана", "id": new_topic.id}), 201
 @app.route('/api/topic/<int:id>', methods=['GET'])
 def get_topic(id):
     try:
@@ -592,28 +622,7 @@ def create_message(id):
         db.session.rollback()
         return jsonify({"error": f"Ошибка при создании сообщения: {str(e)}"}), 500
     
-# Создание новой темы
-@app.route('/api/topics', methods=['POST'])
-def create_topic():
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
 
-    data = request.json
-    title = data.get("title")
-    description = data.get("description")
-
-    if not title or not description:
-        return jsonify({"error": "Название и описание обязательны"}), 400
-
-    new_topic = Topic(
-        title=title,
-        description=description,
-        user_id=session.get("user_id")
-    )
-    db.session.add(new_topic)
-    db.session.commit()
-
-    return jsonify({"message": "Тема создана", "id": new_topic.id}), 201
 
 @app.route('/api/messages/<int:id>', methods=['DELETE'])
 def delete_message(id):
