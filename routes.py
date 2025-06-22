@@ -547,28 +547,7 @@ def get_topics():
         logger.error(f"Ошибка при получении тем форума: {str(e)}")
         return jsonify({"error": f"Ошибка при получении тем: {str(e)}"}), 500
 
-# Создание новой темы
-@app.route('/api/topics', methods=['POST'])
-def create_topic():
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
 
-    data = request.json
-    title = data.get("title")
-    description = data.get("description")
-
-    if not title or not description:
-        return jsonify({"error": "Название и описание обязательны"}), 400
-
-    new_topic = Topic(
-        title=title,
-        description=description,
-        user_id=session.get("user_id")
-    )
-    db.session.add(new_topic)
-    db.session.commit()
-
-    return jsonify({"message": "Тема создана", "id": new_topic.id}), 201
 @app.route('/api/topic/<int:id>', methods=['GET'])
 def get_topic(id):
     try:
@@ -581,6 +560,31 @@ def get_topic(id):
     except Exception as e:
         logger.error(f"Ошибка при получении темы {id}: {str(e)}")
         return jsonify({"error": f"Ошибка при получении темы: {str(e)}"}), 500
+
+# Создание новой темы
+@app.route('/api/topics', methods=['POST'])
+def create_topic():
+    data = request.json
+    title = data.get("title")
+    description = data.get("description")
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "Пользователь не авторизован"}), 401
+
+    if not title or not description:
+        return jsonify({"error": "Название и описание обязательны"}), 400
+
+    new_topic = Topic(
+        title=title,
+        description=description,
+        user_id=user_id
+    )
+    db.session.add(new_topic)
+    db.session.commit()
+
+    return jsonify({"message": "Тема создана", "id": new_topic.id}), 201
+
 
 # Создание нового сообщения в теме
 @app.route('/api/topic/<int:id>/messages', methods=['POST'])
@@ -626,11 +630,9 @@ def create_message(id):
 
 @app.route('/api/messages/<int:id>', methods=['DELETE'])
 def delete_message(id):
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
     data = request.get_json()
     role_id = data.get("role_id")
+
     if role_id != 1:
         return jsonify({"error": "Недостаточно прав"}), 403
 
@@ -641,20 +643,21 @@ def delete_message(id):
 
 @app.route('/api/topic/<int:id>', methods=['DELETE'])
 def delete_topic(id):
-    if not session.get("user_id"):
-        return jsonify({"error": "Требуется авторизация"}), 401
-
     data = request.get_json()
     role_id = data.get("role_id")
+
     if role_id != 1:
         return jsonify({"error": "Недостаточно прав"}), 403
 
     topic = Topic.query.get_or_404(id)
-    # Можно добавить удаление связанных сообщений
+
+    # Удаляем связанные сообщения
     Message.query.filter_by(topic_id=id).delete()
+
     db.session.delete(topic)
     db.session.commit()
     return jsonify({"message": "Тема удалена"}), 200
+
 
 
 @app.route('/api/safeshelves', methods=['GET'])
