@@ -864,59 +864,15 @@ def register_user():
     
 from datetime import datetime
 
-@app.route('/api/user/profile', methods=['PUT'])
-def update_user_profile():
-    user_id = session.get("user_id")
-    if not user_id:
-        return jsonify({"error": "Требуется авторизация"}), 401
-
-    try:
-        data = request.get_json()
-        user = User.query.get(int(user_id))
-
-        if not user:
-            return jsonify({"error": "Пользователь не найден"}), 404
-
-        # Обновляем поля, если они переданы
-        for field in ["name", "email", "avatar_url", "bio", "phone"]:
-            if field in data:
-                setattr(user, field, data[field])
-
-        # Обработка даты рождения
-        birth_date = data.get("birth_date")
-        if birth_date:
-            try:
-                user.birth_date = datetime.strptime(birth_date, "%Y-%m-%d").date()
-            except ValueError:
-                return jsonify({"error": "Неверный формат даты рождения. Используйте YYYY-MM-DD"}), 400
-
-        db.session.commit()
-
-        return jsonify({
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "role_id": user.role_id,
-            "avatar_url": user.avatar_url,
-            "bio": user.bio,
-            "phone": user.phone,
-            "birth_date": user.birth_date.isoformat() if user.birth_date else None
-        }), 200
-
-    except Exception as e:
-        logger.exception("Ошибка при обновлении профиля")
-        db.session.rollback()
-        return jsonify({"error": "Внутренняя ошибка сервера"}), 500
-
 @app.route('/api/user/profile', methods=['GET'])
 def get_user_profile():
-    user_id = session.get("user_id")
+    user_id = request.headers.get("X-User-ID")
+
     if not user_id:
-        return jsonify({"error": "Требуется авторизация"}), 401
+        return jsonify({"error": "User ID отсутствует"}), 401
 
     try:
         user = User.query.get(int(user_id))
-
         if not user:
             return jsonify({"error": "Пользователь не найден"}), 404
 
@@ -935,7 +891,51 @@ def get_user_profile():
         logger.exception("Ошибка при получении профиля пользователя")
         return jsonify({"error": "Внутренняя ошибка сервера"}), 500
 
-    
+@app.route('/api/user/profile', methods=['PUT'])
+def update_user_profile():
+    data = request.json
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "User ID отсутствует"}), 401
+
+    try:
+        user = User.query.get(int(user_id))
+        if not user:
+            return jsonify({"error": "Пользователь не найден"}), 404
+
+        # Обновление полей
+        user.name = data.get("name", user.name)
+        user.email = data.get("email", user.email)
+        user.avatar_url = data.get("avatar_url", user.avatar_url)
+        user.bio = data.get("bio", user.bio)
+        user.phone = data.get("phone", user.phone)
+
+        # Преобразование даты рождения
+        birth_date = data.get("birth_date")
+        if birth_date:
+            try:
+                user.birth_date = datetime.strptime(birth_date, "%Y-%m-%d").date()
+            except ValueError:
+                return jsonify({"error": "Неверный формат даты рождения (ожидается YYYY-MM-DD)"}), 400
+
+        db.session.commit()
+
+        return jsonify({
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role_id": user.role_id,
+            "avatar_url": user.avatar_url,
+            "bio": user.bio,
+            "phone": user.phone,
+            "birth_date": user.birth_date.isoformat() if user.birth_date else None
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении профиля: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Ошибка при обновлении профиля"}), 500
 
 
 @app.route("/api/authors", methods=["POST"])
