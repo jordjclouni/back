@@ -651,11 +651,13 @@ def delete_message(id):
 def delete_topic(id):
     data = request.get_json()
     role_id = data.get("role_id")
-
-    if role_id != 1:
-        return jsonify({"error": "Недостаточно прав"}), 403
+    user_id = data.get("user_id")
 
     topic = Topic.query.get_or_404(id)
+
+    # Проверка: либо админ, либо автор темы
+    if role_id != 1 and topic.user_id != user_id:
+        return jsonify({"error": "Недостаточно прав для удаления этой темы"}), 403
 
     # Удаляем связанные сообщения
     Message.query.filter_by(topic_id=id).delete()
@@ -663,6 +665,7 @@ def delete_topic(id):
     db.session.delete(topic)
     db.session.commit()
     return jsonify({"message": "Тема удалена"}), 200
+
 
 
 
