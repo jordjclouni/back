@@ -632,11 +632,17 @@ def create_message(id):
 def delete_message(id):
     data = request.get_json()
     role_id = data.get("role_id")
+    user_id = data.get("user_id")
 
-    if role_id != 1:
-        return jsonify({"error": "Недостаточно прав"}), 403
+    if role_id is None or user_id is None:
+        return jsonify({"error": "Необходимы role_id и user_id"}), 400
 
     message = Message.query.get_or_404(id)
+
+    # Разрешить только админу или автору сообщения
+    if role_id != 1 and message.user_id != user_id:
+        return jsonify({"error": "Недостаточно прав"}), 403
+
     db.session.delete(message)
     db.session.commit()
     return jsonify({"message": "Сообщение удалено"}), 200
