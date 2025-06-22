@@ -566,19 +566,31 @@ def create_message(id):
         return jsonify({"error": "Содержимое сообщения обязательно"}), 400
 
     try:
+        user_id = session.get("user_id")
+        user = User.query.get(user_id)
+
         new_message = Message(
             content=content,
             topic_id=id,
-            user_id=session.get("user_id")
+            user_id=user_id
         )
         db.session.add(new_message)
         db.session.commit()
-        return jsonify({"message": "Сообщение добавлено", "id": new_message.id}), 201
+
+        return jsonify({
+            "id": new_message.id,
+            "content": new_message.content,
+            "topic_id": new_message.topic_id,
+            "user_id": new_message.user_id,
+            "user_name": user.name if user else "Неизвестно",
+            "created_at": new_message.created_at.isoformat()
+        }), 201
+
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка при создании сообщения в теме {id}: {str(e)}")
         return jsonify({"error": f"Ошибка при создании сообщения: {str(e)}"}), 500
-        
+
 # Получение списка тем форума
 @app.route('/api/topics', methods=['GET'])
 def get_topics():
