@@ -1743,18 +1743,23 @@ def take_book(book_id):
 
 @app.route('/api/books/<int:id>', methods=['DELETE'])
 def delete_book(id):
-    user_id = request.args.get("user_id", type=int)
-    if not user_id:
-        return jsonify({"error": "Требуется user_id"}), 401
+    logger.info(f"Параметры запроса: {request.args}")
+    user_id = request.args.get("user_id")
 
-    
-    # Проверяем, существует ли пользователь
-    user = User.query.get(user_id)
+    if not user_id:
+        logger.error("Отсутствует user_id в параметрах запроса")
+        return jsonify({"error": "Требуется авторизация"}), 401
+
+    user = User.query.get(int(user_id))
     if not user:
         logger.error(f"Пользователь с id={user_id} не найден")
         return jsonify({"error": "Пользователь не найден"}), 404
 
-    # Проверяем, существует ли книга
+    # Проверка на администратора
+    if user.role_id != 1:
+        logger.warning(f"Попытка удалить книгу неадминистратором: user_id={user_id}")
+        return jsonify({"error": "Доступ запрещён. Требуются права администратора"}), 403
+
     book = Book.query.get(id)
     if not book:
         logger.error(f"Книга с id={id} не найдена")
@@ -1768,13 +1773,14 @@ def delete_book(id):
         # Удаляем книгу
         db.session.delete(book)
         db.session.commit()
-        logger.info(f"Книга удалена: book_id={id}, user_id={user_id}")
+        logger.info(f"Книга удалена администратором: book_id={id}, admin_id={user_id}")
+        return jsonify({"message": "Книга успешно удалена", "book_id": id}), 200
+
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка при удалении книги: {str(e)}")
         return jsonify({"error": f"Не удалось удалить книгу: {str(e)}"}), 500
 
-    return jsonify({"message": "Книга успешно удалена", "book_id": id}), 200
 
 @app.route('/api/books/update/<int:id>', methods=['PUT'])
 def edit_book(id):
