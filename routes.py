@@ -1743,12 +1743,10 @@ def take_book(book_id):
 
 @app.route('/api/books/<int:id>', methods=['DELETE'])
 def delete_book(id):
-    logger.info(f"Сессия: {session}")
-    if not session.get("user_id"):
-        logger.error("Отсутствует user_id в сессии")
-        return jsonify({"error": "Требуется авторизация"}), 401
+    user_id = request.args.get("user_id", type=int)
+    if not user_id:
+        return jsonify({"error": "Требуется user_id"}), 401
 
-    user_id = session.get("user_id")
     
     # Проверяем, существует ли пользователь
     user = User.query.get(user_id)
@@ -1780,74 +1778,45 @@ def delete_book(id):
 
 @app.route('/api/books/update/<int:id>', methods=['PUT'])
 def edit_book(id):
-    logger.info(f"Сессия: {session}")
-    if not session.get("user_id"):
-        logger.error("Отсутствует user_id в сессии")
-        return jsonify({"error": "Требуется авторизация"}), 401
+    data = request.json
+    if not data:
+        return jsonify({"error": "Нет данных"}), 400
 
-    # Проверяем, существует ли книга
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Требуется user_id"}), 401
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "Пользователь не найден"}), 404
+
     book = Book.query.get(id)
     if not book:
-        logger.error(f"Книга с id={id} не найдена")
         return jsonify({"error": "Книга не найдена"}), 404
 
-    data = request.json
-
-    # Проверяем, переданы ли данные
-    if not data:
-        logger.error("Данные не переданы")
-        return jsonify({"error": "Данные не переданы"}), 400
-
-    # Получаем данные из запроса
     title = data.get("title", book.title)
     author_id = data.get("author_id", book.author_id)
     description = data.get("description", book.description)
     safe_shelf_id = data.get("safe_shelf_id", book.safe_shelf_id)
-    user_id = data.get("user_id", session.get("user_id"))  # По умолчанию берем из сессии
     genre_ids = data.get("genre_ids", [bg.genre_id for bg in book.genres])
     status = data.get("status", book.status)
     isbn = data.get("isbn", book.isbn)
 
-    logger.info(f"Полученные данные: {data}")
-
-    # Проверяем, существует ли пользователь
-    user = User.query.get(user_id)
-    if not user:
-        logger.error(f"Пользователь с id={user_id} не найден")
-        return jsonify({"error": "Пользователь не найден"}), 404
-
-    # Проверяем, является ли пользователь администратором
     is_admin = user.role_id == 1
-    logger.info(f"Роль пользователя: {user.role_id}, администратор: {is_admin}")
 
-    # Для неадминов проверяем соответствие user_id
-    if not is_admin and str(session.get("user_id")) != str(user_id):
-        logger.error(f"Несоответствие user_id: сессия={session.get('user_id')}, запрос={user_id}")
-        return jsonify({"error": "Несоответствие идентификатора пользователя"}), 403
+    if not is_admin and book.user_id != user_id:
+        return jsonify({"error": "Вы не можете редактировать книгу другого пользователя"}), 403
 
-    # Администратор может редактировать любые книги, игнорируя некоторые проверки
-    if not is_admin:
-        # Для неадминов проверяем, не принадлежит ли книга другому пользователю
-        if book.user_id and str(book.user_id) != str(user_id):
-            logger.error(f"Книга принадлежит другому пользователю: book.user_id={book.user_id}, user_id={user_id}")
-            return jsonify({"error": "Вы не можете редактировать книгу другого пользователя"}), 403
-
-    # Проверяем, существует ли книга с таким ISBN (кроме текущей книги), но только для неадминов
     if not is_admin:
         existing_book = Book.query.filter(Book.isbn == isbn, Book.id != id).first()
         if existing_book:
-            logger.error(f"Книга с ISBN={isbn} уже существует")
             return jsonify({"error": "Книга с таким ISBN уже существует"}), 400
 
-    # Проверяем жанры только для неадминов
-    if not is_admin:
         existing_genres = Genre.query.filter(Genre.id.in_(genre_ids)).all()
         if len(existing_genres) != len(genre_ids):
-            logger.error(f"Некорректные жанры: genre_ids={genre_ids}")
-            return jsonify({"error": "Один или несколько жанров не существуют"}), 400
+            return jsonify({"error": "Некорректные жанры"}), 400
 
     try:
-        # Обновляем поля книги
         book.title = title
         book.author_id = author_id
         book.description = description
@@ -1856,13 +1825,12 @@ def edit_book(id):
         book.status = status
         book.user_id = user_id if status == "in_hand" else None
 
-        # Обновляем жанры: удаляем старые и добавляем новые
+        # Обновление жанров
         BookGenre.query.filter_by(book_id=book.id).delete()
         for genre_id in genre_ids:
-            book_genre = BookGenre(book_id=book.id, genre_id=genre_id)
-            db.session.add(book_genre)
+            db.session.add(BookGenre(book_id=book.id, genre_id=genre_id))
 
-        # Обновляем путь книги
+        # Обновление пути
         path = json.loads(book.path) if book.path else []
         if status == "available" and safe_shelf_id and book.status != "available":
             path.append({
@@ -1881,19 +1849,15 @@ def edit_book(id):
             })
         book.path = json.dumps(path)
 
-        # Обновляем инвентарь
+        # Обновление инвентаря
         UserInventory.query.filter_by(book_id=book.id).delete()
         if status == "in_hand":
-            inventory_entry = UserInventory(user_id=user_id, book_id=book.id)
-            db.session.add(inventory_entry)
+            db.session.add(UserInventory(user_id=user_id, book_id=book.id))
 
-        # Завершаем транзакцию
         db.session.commit()
-        logger.info(f"Книга обновлена: book_id={book.id}, user_id={user_id}")
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Ошибка при обновлении книги: {str(e)}")
-        return jsonify({"error": f"Не удалось обновить книгу: {str(e)}"}), 500
+        return jsonify({"error": f"Ошибка при обновлении книги: {str(e)}"}), 500
 
     return jsonify({"message": "Книга успешно обновлена", "book_id": book.id, "isbn": isbn}), 200
 
