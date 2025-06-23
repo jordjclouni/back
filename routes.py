@@ -29,6 +29,62 @@ import logging
 from flask import send_from_directory
 from werkzeug.utils import secure_filename
 
+@app.route('/api/conversations/<int:conversation_id>/give-book', methods=['POST'])
+def give_book(conversation_id):
+    try:
+        data = request.json
+        sender_id = data.get("sender_id")  # тот, кто отдаёт
+        if not sender_id:
+            return jsonify({"error": "Отсутствует sender_id"}), 400
+
+        # Проверяем существование беседы
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation:
+            return jsonify({"error": "Беседа не найдена"}), 404
+
+        # Только recipient может отдать книгу
+        if int(sender_id) != conversation.recipient_id:
+            return jsonify({"error": "Только получатель может отдать книгу"}), 403
+
+        book_id = conversation.book_id
+        recipient_id = conversation.sender_id
+
+        book = Book.query.get(book_id)
+        if not book:
+            return jsonify({"error": "Книга не найдена"}), 404
+
+        # Проверка, что recipient ещё не получил книгу
+        existing = UserInventory.query.filter_by(user_id=recipient_id, book_id=book_id).first()
+        if existing:
+            return jsonify({"error": "Книга уже передана"}), 400
+
+        # Обновление истории книги
+        path = book.path if isinstance(book.path, list) else json.loads(book.path or "[]")
+        path.append({
+            "user_id": recipient_id,
+            "timestamp": datetime.now().isoformat(),
+            "action": "передана",
+            "location": "у пользователя"
+        })
+
+        # Добавление в инвентарь
+        inventory_entry = UserInventory(user_id=recipient_id, book_id=book_id)
+        db.session.add(inventory_entry)
+
+        # Обновление владельца книги
+        book.user_id = recipient_id
+        book.status = "in_hand"
+        book.path = json.dumps(path)
+
+        db.session.commit()
+        return jsonify({"message": "Книга передана"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("Ошибка при передаче книги")
+        return jsonify({"error": f"Ошибка сервера: {str(e)}"}), 500
+
+
 # Эндпоинт для добавления отзыва
 @app.route('/api/reviews', methods=['POST'])
 def add_review():
@@ -1410,7 +1466,7 @@ def add_book():
             path.append({
                 "user_id": None,
                 "timestamp": datetime.now().isoformat(),
-                "action": "added",
+                "action": "взята",
                 "location": "safe_shelf",
                 "shelf_id": safe_shelf_id
             })
@@ -1418,7 +1474,7 @@ def add_book():
             path.append({
                 "user_id": user_id,
                 "timestamp": datetime.now().isoformat(),
-                "action": "taken",
+                "action": "добавлена",
                 "location": "у пользователя"
             })
 
@@ -1491,7 +1547,7 @@ def add_to_inventory():
             current_path.append({
                 "user_id": None,
                 "timestamp": datetime.now().isoformat(),
-                "action": "added",
+                "action": "взята",
                 "location": "safe_shelf",
                 "shelf_id": book.safe_shelf_id
             })
@@ -1499,7 +1555,7 @@ def add_to_inventory():
             current_path.append({
                 "user_id": user_id,
                 "timestamp": datetime.now().isoformat(),
-                "action": "taken",
+                "action": "добавлена",
                 "location": "у пользователя"
             })
     except Exception as e:
@@ -1678,7 +1734,7 @@ def release_book(book_id):
         path.append({
             "user_id": None,
             "timestamp": datetime.now().isoformat(),
-            "action": "returned",
+            "action": "отпущена",
             "location": "safe_shelf",
             "shelf_id": safe_shelf_id
         })
@@ -1731,7 +1787,7 @@ def take_book(book_id):
     path.append({
         "user_id": user_id,
         "timestamp": datetime.now().isoformat(),
-        "action": "taken",
+        "action": "добавлена",
         "location": "у пользователя"
     })
     book.path = json.dumps(path)
@@ -1868,7 +1924,7 @@ def edit_book(id):
             path.append({
                 "user_id": None,
                 "timestamp": datetime.now().isoformat(),
-                "action": "returned",
+                "action": "отпущена",
                 "location": "safe_shelf",
                 "shelf_id": safe_shelf_id
             })
@@ -1876,7 +1932,7 @@ def edit_book(id):
             path.append({
                 "user_id": user_id,
                 "timestamp": datetime.now().isoformat(),
-                "action": "taken",
+                "action": "добавлена",
                 "location": "у пользователя"
             })
         book.path = json.dumps(path)
