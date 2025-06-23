@@ -28,6 +28,20 @@ import logging
 
 from flask import send_from_directory
 from werkzeug.utils import secure_filename
+@app.route("/api/conversations/<int:conversation_id>", methods=["DELETE"])
+def delete_conversation(conversation_id):
+    try:
+        conv = Conversation.query.get(conversation_id)
+        if not conv:
+            return jsonify({"error": "Беседа не найдена"}), 404
+
+        db.session.delete(conv)
+        db.session.commit()
+        return jsonify({"message": "Беседа удалена"}), 200
+    except Exception as e:
+        logger.error(f"Ошибка при удалении беседы: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Ошибка сервера"}), 500
 
 @app.route('/api/conversations/<int:conversation_id>/give-book', methods=['POST'])
 def give_book(conversation_id):
